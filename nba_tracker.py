@@ -24,6 +24,7 @@ BASE_URL   = "https://api.balldontlie.io/v1"
 TODAY      = datetime.now().strftime("%Y-%m-%d")
 YESTERDAY  = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 SEASON     = 2024   # NBA season year (2024 = the 2024-25 season)
+API_KEY    = "faa94368-1879-4ff6-b99e-22f16f51a0fb"
 
 
 # =============================================================================
@@ -68,7 +69,7 @@ def fetch(endpoint, params=None):
     url = f"{BASE_URL}/{endpoint}"
     try:
         response = requests.get(url, params=params, timeout=10,
-                        headers={"Authorization": "faa94368-1879-4ff6-b99e-22f16f51a0fb"})
+                        headers={"Authorization": API_KEY})
         response.raise_for_status()   # raises an error if status code is 4xx/5xx
         return response.json()
     except requests.exceptions.ConnectionError:
@@ -183,57 +184,116 @@ def show_scores(date=None):
 
 
 # =============================================================================
-#  FEATURE 2 — Team Standings
-#  Fetches current season standings and displays them in a formatted table.
-#  We split into Eastern and Western conferences.
+#  FEATURE 2 — Calculated Standings
+#  balldontlie.io and TheSportsDB both lock standings behind paid plans.
+#  So we calculate them ourselves by fetching all completed games this
+#  season and tallying wins/losses per team — exactly how the NBA does it.
+#
+#  This is Option B: no restrictions, pure logic, great learning exercise.
+#  We make multiple paginated API calls to get all ~1200 season games.
 # =============================================================================
+# Cache for standings — avoids re-fetching if user views standings again
+_standings_cache = None
+
 def show_standings():
+    global _standings_cache
+
     print(f"\n{bold('━━━  NBA STANDINGS  ━━━')}  {c('dim', f'{SEASON}-{str(SEASON+1)[-2:]} Season')}\n")
 
-    data = fetch("standings", params={"season": SEASON})
-
-    if data is None:
+    if _standings_cache is not None:
+        east, west = _standings_cache
+        print_conferences(east, west)
         return
 
-    standings = data.get("data", [])
+    print(c("dim", "  Loading recent game results…\n"))
 
-    if not standings:
-        print(c("dim", "  Standings not available yet for this season."))
+    import time
+    all_games = []
+
+    for page in range(1, 4):   # max 3 pages = 300 games
+        data = fetch("games", params={
+            "seasons[]": SEASON,
+            "per_page":  100,
+            "page":      page
+        })
+
+        if data is None:
+            return
+
+        games = data.get("data", [])
+        all_games += games
+
+        if len(games) < 100:
+            break
+
+        time.sleep(0.8)   # pause between pages
+
+    finished = [g for g in all_games if g.get("status") == "Final"]
+
+    if not finished:
+        print(c("dim", "  No completed games found yet this season."))
         return
 
-    # Separate into conferences
-    east = [s for s in standings if s["conference"] == "East"]
-    west = [s for s in standings if s["conference"] == "West"]
+    records = {}
 
-    # Sort by wins descending
-    east.sort(key=lambda x: x["wins"], reverse=True)
-    west.sort(key=lambda x: x["wins"], reverse=True)
+    for game in finished:
+        home    = game["home_team"]
+        visitor = game["visitor_team"]
+        h_score = game.get("home_team_score") or 0
+        v_score = game.get("visitor_team_score") or 0
 
-    def print_conference(teams, name, color):
+        if h_score == 0 and v_score == 0:
+            continue
+
+        for team in [home, visitor]:
+            if team["id"] not in records:
+                records[team["id"]] = {
+                    "name":       f"{team['city']} {team['name']}",
+                    "conference": team.get("conference", ""),
+                    "wins":       0,
+                    "losses":     0
+                }
+
+        if h_score > v_score:
+            records[home["id"]]["wins"]      += 1
+            records[visitor["id"]]["losses"] += 1
+        else:
+            records[visitor["id"]]["wins"]   += 1
+            records[home["id"]]["losses"]    += 1
+
+    east = sorted(
+        [r for r in records.values() if r["conference"] == "East"],
+        key=lambda r: r["wins"] / max(r["wins"] + r["losses"], 1),
+        reverse=True
+    )
+    west = sorted(
+        [r for r in records.values() if r["conference"] == "West"],
+        key=lambda r: r["wins"] / max(r["wins"] + r["losses"], 1),
+        reverse=True
+    )
+
+    _standings_cache = (east, west)
+    print(c("dim", f"  Based on {len(finished)} games  •  cached for this session\n"))
+    print_conferences(east, west)
+
+
+def print_conferences(east, west):
+    def print_conf(teams, name, color):
         print(f"  {c(color, bold(f'◆ {name}ern Conference'))}")
-        print(f"  {'#':<4} {'Team':<28} {'W':<5} {'L':<5} {'Win%':<8} {'Streak'}")
-        print(f"  {c('dim', '─' * 58)}")
+        print(f"  {'#':<4} {'Team':<30} {'W':<6} {'L':<6} {'Win%'}")
+        print(f"  {c('dim', '─' * 55)}")
 
         for i, team in enumerate(teams, 1):
-            wins   = team.get("wins", 0)
-            losses = team.get("losses", 0)
-            total  = wins + losses
-            pct    = f"{wins/total:.3f}" if total > 0 else ".000"
-            streak = team.get("streak", "–")
-            name_  = format_team(team["team"])
-
-            # Highlight top 6 (playoff spots) slightly
-            rank_color = "white" if i <= 6 else "dim"
-            rank_str   = f"{i}."
-
-            print(f"  {c(rank_color, rank_str):<5} {c(rank_color, name_):<28} "
-                  f"{c(rank_color, str(wins)):<5} {c(rank_color, str(losses)):<5} "
-                  f"{c(rank_color, pct):<8} {c('dim', str(streak))}")
-
+            w      = team["wins"]
+            l      = team["losses"]
+            pct    = f"{w/(w+l):.3f}" if (w+l) > 0 else ".000"
+            col    = "white" if i <= 6 else "dim"
+            print(f"  {c(col, f'{i}.'):<5} {c(col, team['name']):<30} "
+                  f"{c(col, str(w)):<6} {c(col, str(l)):<6} {c(col, pct)}")
         print()
 
-    print_conference(east, "East", "blue")
-    print_conference(west, "West", "red")
+    print_conf(east, "East", "blue")
+    print_conf(west, "West", "red")
 
 
 # =============================================================================
@@ -244,7 +304,7 @@ def show_team_games(team_name):
     print(f"\n{bold('━━━  TEAM SEARCH  ━━━')}\n")
 
     # First, find the team ID by searching the teams endpoint
-    data = fetch("teams", params={"search": team_name, "per_page": 5})
+    data = fetch("teams", params={"per_page": 30})
 
     if data is None:
         return
@@ -255,8 +315,23 @@ def show_team_games(team_name):
         print(c("yellow", f"  No team found matching '{team_name}'. Try a city or nickname."))
         return
 
-    # Use the first match
-    team    = teams[0]
+    # Search parameter isn't reliable on free tier — filter manually.
+    # Check if the search term appears in the team name, city, or abbreviation.
+    query_lower = team_name.lower()
+    matched = [
+        t for t in teams
+        if query_lower in t.get("name", "").lower()
+        or query_lower in t.get("city", "").lower()
+        or query_lower in t.get("abbreviation", "").lower()
+        or query_lower in f"{t.get('city','')} {t.get('name','')}".lower()
+    ]
+
+    if not matched:
+        print(c("yellow", f"  No team found matching '{team_name}'. Try a city or nickname."))
+        print(c("dim",    f"  Try: Lakers, Celtics, Warriors, Heat, OKC, Thunder, Knicks"))
+        return
+
+    team = matched[0]
     team_id = team["id"]
     print(f"  Found: {c('cyan', bold(format_team(team)))}  "
           f"{c('dim', team.get('abbreviation',''))}  —  {team.get('conference','')} Conference\n")
