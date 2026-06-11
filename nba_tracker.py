@@ -67,7 +67,8 @@ def bold(text):
 def fetch(endpoint, params=None):
     url = f"{BASE_URL}/{endpoint}"
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, timeout=10,
+                        headers={"Authorization": "faa94368-1879-4ff6-b99e-22f16f51a0fb"})
         response.raise_for_status()   # raises an error if status code is 4xx/5xx
         return response.json()
     except requests.exceptions.ConnectionError:
