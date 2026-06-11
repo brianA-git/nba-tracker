@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 BASE_URL   = "https://api.balldontlie.io/v1"
 TODAY      = datetime.now().strftime("%Y-%m-%d")
 YESTERDAY  = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-SEASON     = 2024   # NBA season year (2024 = the 2024-25 season)
+SEASON     = 2025   # NBA season year (2024 = the 2024-25 season)
 API_KEY    = "faa94368-1879-4ff6-b99e-22f16f51a0fb"
 
 
